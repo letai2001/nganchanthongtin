@@ -19,6 +19,21 @@ def simulate_spread_MT_LT(G, sources, topic):
                     activated_nodes.add((neighbor, current_topic))
     
     return len(activated_nodes)
+def simulate_spread(G, sources):
+    activated_nodes = set(sources)
+    for source in sources:
+        for neighbor in G.successors(source):
+            if neighbor not in activated_nodes:
+                if random.random() < 1 / G.in_degree(neighbor):
+                    activated_nodes.add(neighbor)
+    return len(activated_nodes)
+
+def monte_carlo_simulation(G, sources, T=10):
+    count = 0
+    for _ in range(T):
+        Ni = simulate_spread(G, sources)
+        count += Ni
+    return count / T
 
 
 # def monte_carlo_simulation(G, sources, T=10):
@@ -41,6 +56,50 @@ def monte_carlo_simulation_MT_LT_subgraph(G, source_sets, T=10, subgraph_ratio=0
             Ni = simulate_spread_MT_LT(subG, sub_source_sets, topic)
             count += Ni
     return count / (T * len(source_sets))
+def IGA_MT_LT_subgraph(G, source_sets, budget, T=10, subgraph_ratio=0.7):
+    A1 = set()
+    U = set(G.nodes())
+    initial_D = monte_carlo_simulation_MT_LT_subgraph(G, source_sets, T=T, subgraph_ratio=subgraph_ratio)
+
+    vmax = None
+    max_sigma_vmax = -float('inf')
+
+    for v in G.nodes():
+        if G.nodes[v]['c'] <= budget:
+            D_v = monte_carlo_simulation_MT_LT_subgraph(G, {topic: [v] for topic in source_sets.keys()}, T=T, subgraph_ratio=subgraph_ratio)
+            sigma_v = initial_D - D_v
+            if sigma_v > max_sigma_vmax:
+                max_sigma_vmax = sigma_v
+                vmax = v
+
+    if vmax is not None:
+        A1.add(vmax)
+
+    while U:
+        u = None
+        max_delta = -float('inf')
+        for v in U - A1:
+            D_A1_u = monte_carlo_simulation_MT_LT_subgraph(G, {topic: list(A1) + [v] for topic in source_sets.keys()}, T=T, subgraph_ratio=subgraph_ratio)
+            sigma_A1_u = initial_D - D_A1_u
+            delta_u = (sigma_A1_u - max_sigma_vmax) / G.nodes[v]['c']
+            if delta_u > max_delta:
+                max_delta = delta_u
+                u = v
+
+        if u is not None and (sum(G.nodes[v]['c'] for v in A1) + G.nodes[u]['c']) <= budget:
+            A1.add(u)
+
+        if u is not None:
+            U.remove(u)
+
+    D_A1 = monte_carlo_simulation_MT_LT_subgraph(G, {topic: list(A1) for topic in source_sets.keys()}, T=T, subgraph_ratio=subgraph_ratio)
+    sigma_A1 = initial_D - D_A1
+
+    if sigma_A1 >= max_sigma_vmax:
+        return A1
+    else:
+        return {vmax}
+
 
 
 # Initialize the graph

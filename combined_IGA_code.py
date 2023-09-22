@@ -4,51 +4,79 @@ import random
 from collections import defaultdict
 
 # Function to simulate the spread of misinformation based on the MT-LT model
-def simulate_spread_MT_LT(G, sources, topic):
-    activated_nodes = set()
-    for source in sources.get(topic, []):
-        if source in G.nodes:
-            activated_nodes.add((source, topic))
+def simulate_spread_MT_LT_updated_G(G, sources):
+    activated_nodes_by_topic = {topic: set() for topic in sources.keys()}
     
-    # Khởi tạo một đồ thị con
-    subgraph = nx.DiGraph()
+    for topic, source_list in sources.items():
+        for source in source_list:
+            if source in G.nodes:
+                G.nodes[source]['state'].add(topic)  # Activate the source nodes for the given topic
+                activated_nodes_by_topic[topic].add(source)
     
     while True:
         new_activations = set()
-        for source, current_topic in list(activated_nodes):
-            if source not in G.nodes:
-                continue
-            for neighbor in G.successors(source):
-                if (neighbor, current_topic) not in activated_nodes and neighbor in G.nodes:
-                    influence_sum = sum(G[source][neighbor]['weight'] * G.nodes[u]['p'].get(t, 0) for u, t in activated_nodes if t == current_topic)
-                    # print(G.nodes[u]['p'].get(current_topic, 0))
-
-                    # print(influence_sum)
-                    if influence_sum >= G.nodes[neighbor]['gamma'].get(current_topic, 0):
-                        # print(G.nodes[neighbor]['gamma'].get(current_topic, 0))
-                        new_activations.add((neighbor, current_topic))
-                        subgraph.add_edge(source, neighbor)  # Thêm cạnh vào đồ thị con
+        
+        for topic, activated_nodes in activated_nodes_by_topic.items():
+            for source in list(activated_nodes):
+                if source not in G.nodes:
+                    continue
+                
+                for neighbor in G.successors(source):
+                    if topic not in G.nodes[neighbor]['state']:
+                        
+                        # Calculate the total influence on 'neighbor' for the current topic
+                        influence_sum = sum(
+                            G[source][neighbor]['weight'] * G.nodes[u]['p'].get(topic, 0)
+                            for u in activated_nodes
+                        )
+                        
+                        # Check if the influence is enough to activate 'neighbor'
+                        if influence_sum >= G.nodes[neighbor]['gamma'].get(topic, 0):
+                            new_activations.add((neighbor, topic))
+                            G.nodes[neighbor]['state'].add(topic)
+                            
         if not new_activations:
             break
-        activated_nodes.update(new_activations)
+        
+        for node, topic in new_activations:
+            activated_nodes_by_topic[topic].add(node)
+            
+    num_activated_nodes_by_topic = {topic: len(nodes) for topic, nodes in activated_nodes_by_topic.items()}
+    return G, num_activated_nodes_by_topic
+
+def separate_graphs_by_topic(G, topics):
+    separate_graphs = {}
+    for topic in topics:
+        # Create a new directed graph for this topic
+        G_topic = nx.DiGraph()
+        for u, v, data in G.edges(data=True):
+            if topic in G.nodes[u]['state'] and topic in G.nodes[v]['state']:
+                # Add edge if both nodes are activated by this topic
+                G_topic.add_edge(u, v, weight=data.get('weight', 1))
+        separate_graphs[topic] = G_topic
+    return separate_graphs
+
+def unify_source_nodes_safe(Gi, Si):
+    Gi_prime = Gi.copy()
+    Hi = 'Hi'
+    Gi_prime.add_node(Hi)
     
-    return subgraph , len(activated_nodes)
-def simulate_spread(G, sources):
-    activated_nodes = set(sources)
-    for source in sources:
-        for neighbor in G.successors(source):
-            if neighbor not in activated_nodes:
-                if random.random() < 1 / G.in_degree(neighbor):
-                    activated_nodes.add(neighbor)
-    return len(activated_nodes)
+    for x in Si:
+        if x not in Gi_prime.nodes:
+            continue
+        for v in list(Gi_prime.successors(x)):
+            if (Hi, v) not in Gi_prime.edges():
+                Gi_prime.add_edge(Hi, v)
+                Gi_prime[Hi][v]['weight'] = Gi_prime[x][v]['weight'] * Gi_prime.nodes[x].get('p', {}).get('topic', 0)
+            else:
+                Gi_prime[Hi][v]['weight'] += Gi_prime[x][v]['weight'] * Gi_prime.nodes[x].get('p', {}).get('topic', 0)
+    
+    Gi_prime.remove_nodes_from(Si)
+    
+    return Gi_prime, Hi
 
 
-def monte_carlo_simulation(G, sources, T=10):
-    count = 0
-    for _ in range(T):
-        Ni = simulate_spread(G, sources)
-        count += Ni
-    return count / T
+
 
 
 # Monte Carlo simulation with subgraph sampling
@@ -60,55 +88,11 @@ def monte_carlo_simulation_MT_LT_subgraph(G, source_sets, T=10, subgraph_ratio=0
         sub_source_sets = {topic: [s for s in sources if s in subG.nodes] for topic, sources in source_sets.items()}
         
         for topic, sources in sub_source_sets.items():
-            Ni = simulate_spread_MT_LT(subG, sub_source_sets, topic)
+            Ni = simulate_spread_MT_LT_updated_G(subG, sub_source_sets, topic)
             count += Ni
     return count / (T * len(source_sets))
 
 # IGA Algorithm with MT-LT model and subgraph sampling
-def IGA_MT_LT_subgraph(G, source_sets, budget, T=10, subgraph_ratio=0.7):
-    A1 = set()
-    U = set(G.nodes())
-    initial_D = monte_carlo_simulation_MT_LT_subgraph(G, source_sets, T=T, subgraph_ratio=subgraph_ratio)
-
-    vmax = None
-    max_sigma_vmax = -float('inf')
-
-    for v in G.nodes():
-        if G.nodes[v]['c'] <= budget:
-            D_v = monte_carlo_simulation_MT_LT_subgraph(G, {topic: [v] for topic in source_sets.keys()}, T=T, subgraph_ratio=subgraph_ratio)
-            sigma_v = initial_D - D_v
-            if sigma_v > max_sigma_vmax:
-                max_sigma_vmax = sigma_v
-                vmax = v
-
-    if vmax is not None:
-        A1.add(vmax)
-
-    while U:
-        u = None
-        max_delta = -float('inf')
-        for v in U - A1:
-            D_A1_u = monte_carlo_simulation_MT_LT_subgraph(G, {topic: list(A1) + [v] for topic in source_sets.keys()}, T=T, subgraph_ratio=subgraph_ratio)
-            sigma_A1_u = initial_D - D_A1_u
-            delta_u = (sigma_A1_u - max_sigma_vmax) / G.nodes[v]['c']
-            if delta_u > max_delta:
-                max_delta = delta_u
-                u = v
-
-        if u is not None and (sum(G.nodes[v]['c'] for v in A1) + G.nodes[u]['c']) <= budget:
-            A1.add(u)
-
-        if u is not None:
-            U.remove(u)
-
-    D_A1 = monte_carlo_simulation_MT_LT_subgraph(G, {topic: list(A1) for topic in source_sets.keys()}, T=T, subgraph_ratio=subgraph_ratio)
-    sigma_A1 = initial_D - D_A1
-
-    if sigma_A1 >= max_sigma_vmax:
-        return A1
-    else:
-        return {vmax}
-
 # Initialize the graph
 
 
@@ -258,32 +242,66 @@ with open('C:\\Users\\Admin\\Downloads\\data\\p2p-Gnutella08.txt', 'r') as file:
 num_topics = 3  # Number of topics (q)
 for node in G.nodes():
     G.nodes[node]['c'] = 1
-    G.nodes[node]['state'] = 'inactive'
-    G.nodes[node]['p'] = {f'topic_{i+1}': random.uniform(0, 1) for i in range(num_topics)}
-    G.nodes[node]['gamma'] = {f'topic_{i+1}': random.uniform(0, 1) for i in range(num_topics)}
+    G.nodes[node]['state'] = set()
+    G.nodes[node]['p'] = {f'topic_{i+1}': random.uniform(0.1, 1) for i in range(num_topics)}
+    G.nodes[node]['gamma'] = {f'topic_{i+1}': random.uniform(0.1, 1) for i in range(num_topics)}
+for u, v in G.edges():
+    G[u][v]['weight'] = 1 / G.in_degree(v)
 
 # Initialize the source sets
-source_sets = {f'topic_{i+1}': random.sample(list(G.nodes), 3) for i in range(num_topics)}
-print(source_sets)
 # Run the optimized IGA algorithm
 budget = 20
 T_reduced = 1  # Reduced number of Monte Carlo simulations
 subgraph_ratio_reduced = 0.3  # Reduced ratio of nodes to keep in the subgraph
 # A_final_subgraph_optimized = IGA_MT_LT_subgraph(G, source_sets, budget, T=T_reduced, subgraph_ratio=subgraph_ratio_reduced)
-for u, v in G.edges():
-    G[u][v]['weight'] = 1 / G.in_degree(v)
 
 # print(sigma)
 
 # Mô phỏng lan truyền thông tin cho từng chủ đề và lưu kết quả vào biến activated_graphs
 activated_graphs = {}
-for topic in source_sets:
-    activated_graph , len_activateed= simulate_spread_MT_LT(G, source_sets, topic)
-    activated_graphs[topic] = activated_graph
+# for topic in source_sets:
+#     activated_graph , len_activateed= simulate_spread_MT_LT(G, source_sets, topic)
+#     activated_graphs[topic] = len_activateed
 
-# In kết quả
-for topic, len_activateed in activated_graphs.items():
-    print(f'Activated nodes for topic {topic}: {len_activateed}')
-GEA_result_modified ,sigma = GEA_modified(G,list(activated_graph.nodes()), budget=20, q=3, T=3)
+# # In kết quả
+# for topic, len_activateed in activated_graphs.items():
+#     print(f'Activated nodes for topic {topic}: {len_activateed}')
+# GEA_result_modified ,sigma = GEA_modified(G,list(activated_graph.nodes()), budget=20, q=3, T=3)
 
-print(GEA_result_modified)
+# print(GEA_result_modified)
+# subgraph, num_nodes_by_topic = simulate_spread_MT_LT_updated_G(G, source_sets)
+
+# Store the results
+# all_results = {
+#     'subgraph_edges': list(subgraph.edges()),
+#     'num_activated_nodes_by_topic': num_nodes_by_topic
+# }
+
+# print(all_results)
+# source_sets = {f'topic_{i+1}': [178 ] for i in range(num_topics)}
+
+random_set = random.sample(list(G.nodes()), min(100, len(G.nodes())))
+source_sets = {f'topic_{i+1}': random_set for i in range(num_topics)}
+
+print(source_sets)
+
+updated_G, num_activated_nodes_by_topic = simulate_spread_MT_LT_updated_G(G.copy(), source_sets)
+
+# Check the updated states for a subset of nodes
+# sample_nodes = random.sample(list(G.nodes()), min(10, len(G.nodes())))
+# print({node: G.nodes[node]['state'] for node in sample_nodes})
+# print(num_activated_nodes_by_topic)
+topics = ['topic_1', 'topic_2', 'topic_3']
+separated_graphs = separate_graphs_by_topic(updated_G, topics)
+
+# Find source nodes for each separated graph
+source_nodes_by_topic = {topic: [node for node in updated_G.nodes if topic in updated_G.nodes[node]['state']] for topic in topics}
+
+# Apply the unify_source_nodes function to each separated graph
+unified_graphs = {}
+for topic in topics:
+    unified_graphs[topic], Hi = unify_source_nodes_safe(separated_graphs[topic], source_nodes_by_topic[topic])
+
+# Show the number of nodes and edges in the unified graphs for each topic
+unified_graphs_info = {topic: (len(G.nodes), len(G.edges)) for topic, G in unified_graphs.items()}
+unified_graphs_info
