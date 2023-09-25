@@ -2,6 +2,7 @@
 import networkx as nx
 import random
 from collections import defaultdict
+from Graph_net import MyGraph
 
 # Function to simulate the spread of misinformation based on the MT-LT model
 def simulate_spread_MT_LT_updated_G(G, sources):
@@ -67,9 +68,9 @@ def unify_source_nodes_safe(Gi, Si):
         for v in list(Gi_prime.successors(x)):
             if (Hi, v) not in Gi_prime.edges():
                 Gi_prime.add_edge(Hi, v)
-                Gi_prime[Hi][v]['weight'] = Gi_prime[x][v]['weight'] * Gi_prime.nodes[x].get('p', {}).get('topic', 0)
+                Gi_prime[Hi][v]['weight'] = Gi_prime[x][v]['weight'] * Gi_prime.nodes[x].get('p', 1)
             else:
-                Gi_prime[Hi][v]['weight'] += Gi_prime[x][v]['weight'] * Gi_prime.nodes[x].get('p', {}).get('topic', 0)
+                Gi_prime[Hi][v]['weight'] += Gi_prime[x][v]['weight'] * Gi_prime.nodes[x].get('p', 1)
     
     Gi_prime.remove_nodes_from(Si)
     
@@ -117,112 +118,128 @@ def f_dfs_iterative(tree, root):
             stack.pop()
     
     return r
+def calculate_f(Ti, u):
+    if Ti.out_degree(u) == 0:  # u is a leaf node
+        return 1
+    r = 1  # Initialize r
+    for v in Ti.successors(u):  # v is a child of u
+        r += calculate_f(Ti, v)
+    return r
 
-def GEA_modified(G, S, budget, q, T=10):
+def generate_live_edge_samples(Gi_prime, num_samples):
+    live_edge_samples = []
+    for _ in range(num_samples):
+        sample = nx.DiGraph()
+        for u, v, data in Gi_prime.edges(data=True):
+            if random.random() <= data.get('weight', 1):
+                sample.add_edge(u, v, weight=data.get('weight', 1))
+        live_edge_samples.append(sample)
+    return live_edge_samples
+
+# Define the function to generate trees rooted at Hi from a live-edge sample graph
+def generate_trees_from_graph(sample, Hi):
+    trees = []
+    visited = set()
+    if sample.number_of_edges() == 0:
+        return trees
+    for node in nx.dfs_preorder_nodes(sample, Hi):
+        if node == Hi:
+            tree = nx.DiGraph()
+            tree.add_node(Hi)
+            trees.append(tree)
+        else:
+            for parent in sample.predecessors(node):
+                if parent in visited:
+                    trees[-1].add_edge(parent, node)
+        visited.add(node)
+    return trees
+def update_f_values(Ti, u, f_values):
+    if u in Ti:
+        Ti.remove_node(u)
+    for v in Ti.nodes():
+        f_values[v] = calculate_f(Ti, v)
+
+def calculate_delta(u, Ti_sets , f_values):
+    delta_u = 0
+    q = len(Ti_sets)  # Number of topics
+    for topic in Ti_sets:
+        for Ti_list in Ti_sets[topic]:
+            for Ti in Ti_list:
+                if u in Ti.nodes():
+                    delta_u += (1/q) * (calculate_f(Ti, 'Hi') - update_f_values(Ti, u , f_values))
+    return delta_u
+
+def GEA(G, B, num_samples=5):
     U = set(G.nodes())
     A1 = set()
+    topics = ['topic_1', 'topic_2', 'topic_3']
+    q = len(topics)
     
-    # Initialize sigma_tilde for each vertex
-    sigma_tilde = defaultdict(int)
+    # Step 2 and 3: Build Gi and Merge Gi
+    separated_graphs = separate_graphs_by_topic(G, topics)
+    source_nodes_by_topic = {topic: [node for node in G.nodes if topic in G.nodes[node]['state']] for topic in topics}
+    unified_graphs = {}
+    for topic in topics:
+        unified_graphs[topic], Hi = unify_source_nodes_safe(separated_graphs[topic], source_nodes_by_topic[topic])
     
-    # Create G_i's
-    Gi_s = [G.copy() for _ in range(q)]
-    Hi_s = []
+    Ti_sets = {}
     
-    for i in range(q):
-        Gi = Gi_s[i]
-        Hi = f"Hi_{i}"
-        Hi_s.append(Hi)
-        Gi.add_node(Hi)
-        for x in S:
-            for v in Gi.successors(x):
-                Gi.add_edge(Hi, v, weight=Gi[x][v]['weight'] * random.uniform(0, 1))
-            
+
+    for topic, Gi_prime in unified_graphs.items():
+        Hi = 'Hi'
+        sample_graphs = generate_live_edge_samples(Gi_prime, num_samples)
+        
+        Ti_sets[topic] = [generate_trees_from_graph(sample, Hi) for sample in sample_graphs]
     
-    # Monte Carlo simulation to generate T_i's
-    Ti_s = []
-    for i in range(q):
-        Gi = Gi_s[i]
-        Hi = Hi_s[i]
-        Ti = []
-        for _ in range(T):
-            sample_tree = nx.DiGraph()
-            sample_tree.add_node(Hi)
-            to_visit = [(Hi, Hi)]
-            while to_visit:
-                parent, current = to_visit.pop()
-                if current != parent:
-                    sample_tree.add_edge(parent, current)
-                for v in Gi.successors(current):
-                    if random.random() < 1 / Gi.in_degree(v):
-                        to_visit.append((current, v))
-            Ti.append(sample_tree)
-        Ti_s.append(Ti)
+    # Initialize sigma_hat (approximated influence spread) for each node to 0
+    sigma_hat = {node: 0 for node in G.nodes()}
     
-    # Calculate f(Ti, u) for all u in T
+    # Step 6: Calculate sigma_hat for all u in THi by Algorithm 4
+    for topic in Ti_sets:
+        for Ti_list in Ti_sets[topic]:
+            for Ti in Ti_list:
+                for u in Ti.nodes():
+                    sigma_hat[u] += calculate_f(Ti, u)
+    
+    # Normalize sigma_hat
+    for u in sigma_hat:
+        sigma_hat[u] = sigma_hat[u] / (q * num_samples)
+    
+    # Step 8: Find umax
+    umax = max((node for node in sigma_hat if G.nodes[node]['c'] <= B), key=lambda node: sigma_hat[node])
     f_values = {}
-    for i in range(q):
-        Ti = Ti_s[i]
-        for tree in Ti:
-            for u in tree.nodes():
-                if u not in f_values:
-                    f_values[u] = []
-                f_values[u].append(f_dfs_iterative(tree, u))
-    
-    # Main loop
+    # Step 9: Repeat
     while U:
-        c_min = min(G.nodes[v]['c'] for v in U)
-        if c_min + sum(G.nodes[v]['c'] for v in A1) > budget:
+        # Step 10: Find cmin
+        cmin = min(G.nodes[node]['c'] for node in U)
+        
+        # Step 11: Check budget
+        if cmin + sum(G.nodes[node]['c'] for node in A1) > B:
             break
         
-        # Calculate delta for each vertex
-        max_delta = -float('inf')
-        u = None
-        for v in U:
-            delta_A1_v = 0
-            if v in f_values:
-                for f_val in f_values[v]:
-                    delta_A1_v += f_val
-            delta_A1_v /= (q * T)
-            
-            if delta_A1_v > max_delta:
-                max_delta = delta_A1_v
-                u = v
-        
-        if u is None:
-            break
-
+        # Step 12: Find u with max delta(A1, u)
+        # u = max(U, key=lambda node: sigma_hat[node] - sum(sigma_hat[v] for v in A1 ))
+        u = max(U, key=lambda node: calculate_delta(node , Ti_sets, sigma_hat))
+        print(u)
         U.remove(u)
-
-        if sum(G.nodes[v]['c'] for v in A1) + G.nodes[u]['c'] <= budget:
+        # Step 14: Check budget again
+        if sum(G.nodes[node]['c'] for node in A1) + G.nodes[u]['c'] <= B:
             A1.add(u)
-            for i in range(q):
-                Ti = Ti_s[i]
-                for tree in Ti:
-                    if u in tree:
-                        tree.remove_node(u)
-                        for v in tree.nodes():
-                            f_values[v] = [f_dfs_iterative(tree, v) for tree in Ti_s[i]]
-                        
-    # Calculate sigma_tilde for A1 and umax
-    umax = max(f_values.keys(), key=lambda v: sum(f_values[v]) / len(f_values[v]) if v in f_values else 0)
-    sigma_umax_tilde = sum(f_values[umax]) / len(f_values[umax]) if umax in f_values else 0
-    sigma_A1_tilde = sum(sum(f_values[v]) / len(f_values[v]) for v in A1 if v in f_values)
-    sigma_hat_A1 = 0
-    for i in range(q):
-        Ti = Ti_s[i]
-        ni = len(Ti)
-        sum_f_Ti_Ai = 0
-        for tree in Ti:
-            sum_f_Ti_Ai += f_dfs_iterative(tree, Hi_s[i])  # Assuming Hi_s[i] is the root for topic i
-        sigma_hat_A1 += (sum_f_Ti_Ai / ni)
-    sigma_hat_A1 /= q
+            for topic in Ti_sets:
+                for Ti_list in Ti_sets[topic]:
+                    for Ti in Ti_list:
+                        if u in Ti:
+                        # Block node u and update f(Ti, v)
+                        # (Assuming you have an update_f_values function)
+                            update_f_values(Ti, u, sigma_hat)
 
+        
+       
     
-    if sigma_umax_tilde > sigma_A1_tilde:
-        return {umax} , sigma_umax_tilde
-    else:
-        return A1 , sigma_hat_A1
+    # Step 23: Finalize the set of nodes A
+    A = A1 if sigma_hat[max(A1, key=lambda node: sigma_hat[node])] > sigma_hat[umax] else {umax}
+    
+    return A
 
 
 
@@ -230,23 +247,31 @@ def GEA_modified(G, S, budget, q, T=10):
 
 
 
-G = nx.DiGraph()
-with open('C:\\Users\\Admin\\Downloads\\data\\p2p-Gnutella08.txt', 'r') as file:
-    for line in file:
-        if line.startswith("#"):
-            continue
-        u, v = map(int, line.strip().split('\t'))
-        G.add_edge(u, v)
 
-# Initialize random parameters for nodes
-num_topics = 3  # Number of topics (q)
-for node in G.nodes():
-    G.nodes[node]['c'] = 1
-    G.nodes[node]['state'] = set()
-    G.nodes[node]['p'] = {f'topic_{i+1}': random.uniform(0.1, 1) for i in range(num_topics)}
-    G.nodes[node]['gamma'] = {f'topic_{i+1}': random.uniform(0.1, 1) for i in range(num_topics)}
-for u, v in G.edges():
-    G[u][v]['weight'] = 1 / G.in_degree(v)
+# G = nx.DiGraph()
+# with open('C:\\Users\\Admin\\Downloads\\data\\p2p-Gnutella08.txt', 'r') as file:
+#     for line in file:
+#         if line.startswith("#"):
+#             continue
+#         u, v = map(int, line.strip().split('\t'))
+#         G.add_edge(u, v)
+
+# # Initialize random parameters for nodes
+# num_topics = 3  # Number of topics (q)
+# for node in G.nodes():
+#     G.nodes[node]['c'] = 1
+#     G.nodes[node]['state'] = set()
+#     G.nodes[node]['p'] = {f'topic_{i+1}': random.uniform(0.1, 1) for i in range(num_topics)}
+#     G.nodes[node]['gamma'] = {f'topic_{i+1}': random.uniform(0.1, 1) for i in range(num_topics)}
+# for u, v in G.edges():
+#     G[u][v]['weight'] = 1 / G.in_degree(v)
+filepath = 'C:\\Users\\Admin\\Downloads\\data\\p2p-Gnutella08.txt'
+num_topics = 3
+
+my_graph = MyGraph(filepath=filepath, num_topics=3)
+
+# Truy cập đồ thị G
+G = my_graph.G
 
 # Initialize the source sets
 # Run the optimized IGA algorithm
@@ -280,28 +305,29 @@ activated_graphs = {}
 # print(all_results)
 # source_sets = {f'topic_{i+1}': [178 ] for i in range(num_topics)}
 
-random_set = random.sample(list(G.nodes()), min(100, len(G.nodes())))
-source_sets = {f'topic_{i+1}': random_set for i in range(num_topics)}
+source_sets = {f'topic_{i+1}': random.sample(list(G.nodes()), min(100, len(G.nodes()))) for i in range(num_topics)}
 
 print(source_sets)
 
 updated_G, num_activated_nodes_by_topic = simulate_spread_MT_LT_updated_G(G.copy(), source_sets)
 
 # Check the updated states for a subset of nodes
-# sample_nodes = random.sample(list(G.nodes()), min(10, len(G.nodes())))
-# print({node: G.nodes[node]['state'] for node in sample_nodes})
-# print(num_activated_nodes_by_topic)
-topics = ['topic_1', 'topic_2', 'topic_3']
-separated_graphs = separate_graphs_by_topic(updated_G, topics)
+sample_nodes = random.sample(list(G.nodes()), min(10, len(G.nodes())))
+print({node: G.nodes[node]['state'] for node in sample_nodes})
+print(num_activated_nodes_by_topic)
+# topics = ['topic_1', 'topic_2', 'topic_3']
+# separated_graphs = separate_graphs_by_topic(updated_G, topics)
 
-# Find source nodes for each separated graph
-source_nodes_by_topic = {topic: [node for node in updated_G.nodes if topic in updated_G.nodes[node]['state']] for topic in topics}
+# # Find source nodes for each separated graph
+# source_nodes_by_topic = {topic: [node for node in updated_G.nodes if topic in updated_G.nodes[node]['state']] for topic in topics}
 
-# Apply the unify_source_nodes function to each separated graph
-unified_graphs = {}
-for topic in topics:
-    unified_graphs[topic], Hi = unify_source_nodes_safe(separated_graphs[topic], source_nodes_by_topic[topic])
+# # Apply the unify_source_nodes function to each separated graph
+# unified_graphs = {}
+# for topic in topics:
+#     unified_graphs[topic], Hi = unify_source_nodes_safe(separated_graphs[topic], source_nodes_by_topic[topic])
 
 # Show the number of nodes and edges in the unified graphs for each topic
-unified_graphs_info = {topic: (len(G.nodes), len(G.edges)) for topic, G in unified_graphs.items()}
-unified_graphs_info
+# unified_graphs_info = {topic: (len(G.nodes), len(G.edges)) for topic, G in unified_graphs.items()}
+# unified_graphs_info
+gea = GEA(updated_G, B = 20, num_samples=5)
+print(gea)
