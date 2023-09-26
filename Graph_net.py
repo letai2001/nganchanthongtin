@@ -33,13 +33,17 @@ class MyGraph:
                     self.G.add_edge(i, j)
                 if random.random() > 0.7:
                     self.G.add_edge(j, i)
+                    
+        # Randomly set state for 1/3 of the nodes
+        random_nodes = random.sample(list(self.G.nodes()), num_nodes // 3)
+        for node in random_nodes:
+            self.G.nodes[node]['state'] = {f'topic_{random.randint(1, self.num_topics)}'}
 
     def initialize_parameters(self):
         for node in self.G.nodes():
             self.G.nodes[node]['c'] = 1
-            self.G.nodes[node]['state'] = set()
+            self.G.nodes[node]['state'] = self.G.nodes[node].get('state', set())
             self.G.nodes[node]['p'] = {f'topic_{i + 1}': random.uniform(0.1, 1) for i in range(self.num_topics)}
             self.G.nodes[node]['gamma'] = {f'topic_{i + 1}': random.uniform(0.1, 1) for i in range(self.num_topics)}
         for u, v in self.G.edges():
             self.G[u][v]['weight'] = 1 / self.G.in_degree(v)
-    
