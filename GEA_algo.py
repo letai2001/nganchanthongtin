@@ -1,63 +1,278 @@
 import networkx as nx
+import random
+from Graph_net import MyGraph
 
-def unify_source_nodes(Gi, Si):
-    # Step 1: Create a copy of the original graph
-    Gi_prime = Gi.copy()
+class MT_LT_GEA:
+    def __init__(self, filepath, num_topics=3):
+        self.my_graph = MyGraph(filepath=filepath, num_topics=num_topics)
+        self.G = self.my_graph.G
+        self.source_sets = {f'topic_{i+1}': random.sample(list(self.G.nodes()), min(100, len(self.G.nodes()))) for i in range(num_topics)}
+
+    def simulate_spread_MT_LT_updated_G(self):
+        # Cài đặt hàm simulate_spread_MT_LT_updated_G ở đây
+        G_copy = self.G.copy()
+        activated_nodes_by_topic = {topic: set() for topic in self.source_sets.keys()}
     
-    # Step 2: Add a new node Hi to Gi_prime
-    Hi = 'Hi'
-    Gi_prime.add_node(Hi)
-    
-    # Step 3: Update edges and weights
-    for x in Si:
-        for v in list(Gi_prime.successors(x)):
-            if (Hi, v) not in Gi_prime.edges():
-                # Step 6: Add edge (Hi, v) to Gi_prime
-                Gi_prime.add_edge(Hi, v)
+        for topic, source_list in self.source_sets.items():
+            for source in source_list:
+                if source in self.G.nodes:
+                    self.G.nodes[source]['state'].add(topic)  # Activate the source nodes for the given topic
+                    activated_nodes_by_topic[topic].add(source)
+        
+        while True:
+            new_activations = set()
+            
+            for topic, activated_nodes in activated_nodes_by_topic.items():
+                for source in list(activated_nodes):
+                    if source not in G_copy.nodes:
+                        continue
+                    
+                    for neighbor in G_copy.successors(source):
+                        if topic not in G_copy.nodes[neighbor]['state']:
+                            
+                            # Calculate the total influence on 'neighbor' for the current topic
+                            influence_sum = sum(
+                                G_copy[source][neighbor]['weight'] * G_copy.nodes[u]['p'].get(topic, 0)
+                                for u in activated_nodes
+                            )
+                            
+                            # Check if the influence is enough to activate 'neighbor'
+                            if influence_sum >= G_copy.nodes[neighbor]['gamma'].get(topic, 0):
+                                new_activations.add((neighbor, topic))
+                                G_copy.nodes[neighbor]['state'].add(topic)
+                                
+            if not new_activations:
+                break
+            
+            for node, topic in new_activations:
+                activated_nodes_by_topic[topic].add(node)
                 
-                # Step 7: Update weight wi_prime(Hi, v) = wi(x, v) * pxi
-                Gi_prime[Hi][v]['weight'] = Gi_prime[x][v]['weight'] * Gi_prime.nodes[x].get('p', {}).get('topic', 0)
+        num_activated_nodes_by_topic = {topic: len(nodes) for topic, nodes in activated_nodes_by_topic.items()}
+        return G_copy, num_activated_nodes_by_topic
+
+    def separate_graphs_by_topic(self, G_update ,  topics):
+        separate_graphs = {}
+        
+        for topic in topics:
+            # Create a new directed graph for this topic
+            G_topic = G_update.copy()
+            
+            for u, data in G_update.nodes(data=True):
+                if topic not in data['state']:
+                    # Set state to empty set if the node is not activated by this topic
+                    G_topic.nodes[u]['state'] = set()
+                    
+            separate_graphs[topic] = G_topic
+
+        return separate_graphs
+        # Cài đặt hàm separate_graphs_by_topic ở đây
+        
+
+    def unify_source_nodes_safe(self, Gi, Si, topic):
+            Gi_prime = Gi.copy()
+            Hi = 'Hi'
+            Gi_prime.add_node(Hi)
+            
+            for x in Si:
+                if x not in Gi_prime.nodes:
+                    continue
+                for v in list(Gi_prime.successors(x)):
+                    if (Hi, v) not in Gi_prime.edges():
+                        Gi_prime.add_edge(Hi, v)
+                        Gi_prime[Hi][v]['weight'] = Gi_prime[x][v]['weight'] * Gi_prime.nodes[x]['p'].get(topic, 1)
+                    else:
+                        Gi_prime[Hi][v]['weight'] += Gi_prime[x][v]['weight'] * Gi_prime.nodes[x]['p'].get(topic, 1)
+            
+            Gi_prime.remove_nodes_from(Si)
+            
+            return Gi_prime, Hi
+
+        # Cài đặt hàm unify_source_nodes_safe ở đây
+
+
+
+        # Cài đặt hàm f_dfs_iterative ở đây
+
+    def calculate_f(self, Ti, u):
+        if Ti.out_degree(u) == 0:  # u is a leaf node
+            return 1
+        r = 1  # Initialize r
+        for v in Ti.successors(u):  # v is a child of u
+            r += self.calculate_f(Ti, v)
+        return r
+
+        # Cài đặt hàm calculate_f ở đây
+
+    def generate_live_edge_samples(self, Gi_prime, num_samples):
+        live_edge_samples = []
+        for _ in range(num_samples):
+            sample = nx.DiGraph()
+            for u, v, data in Gi_prime.edges(data=True):
+                if random.random() <= data.get('weight', 1):
+                    sample.add_edge(u, v, weight=data.get('weight', 1))
+            live_edge_samples.append(sample)
+        return live_edge_samples
+
+        # Cài đặt hàm generate_live_edge_samples ở đây
+
+    def generate_trees_from_graph(self, sample, Hi):
+        trees = []
+    
+        if Hi not in sample.nodes():
+            return trees  # Return empty list if Hi is not in sample
+        
+        for node in nx.dfs_preorder_nodes(sample, Hi):
+            if node == Hi:
+                tree = nx.DiGraph()
+                tree.add_node(Hi)
             else:
-                # Step 9: Update weight wi_prime(Hi, v)
-                Gi_prime[Hi][v]['weight'] += Gi_prime[x][v]['weight'] * Gi_prime.nodes[x].get('p', {}).get('topic', 0)
-    
-    # Step 14: Remove all nodes Si from Gi_prime
-    Gi_prime.remove_nodes_from(Si)
-    
-    return Gi_prime, Hi
-def unify_source_nodes_safe(Gi, Si):
-    Gi_prime = Gi.copy()
-    Hi = 'Hi'
-    Gi_prime.add_node(Hi)
-    
-    for x in Si:
-        if x not in Gi_prime.nodes:
-            continue
-        for v in list(Gi_prime.successors(x)):
-            if (Hi, v) not in Gi_prime.edges():
-                Gi_prime.add_edge(Hi, v)
-                Gi_prime[Hi][v]['weight'] = Gi_prime[x][v]['weight'] * Gi_prime.nodes[x].get('p', {}).get('topic', 0)
-            else:
-                Gi_prime[Hi][v]['weight'] += Gi_prime[x][v]['weight'] * Gi_prime.nodes[x].get('p', {}).get('topic', 0)
-    
-    Gi_prime.remove_nodes_from(Si)
-    
-    return Gi_prime, Hi
+                for parent in sample.predecessors(node):
+                    if parent == Hi:
+                        trees.append(tree)  # Add the tree only when Hi has successors
+                    if parent in tree.nodes():
+                        tree.add_edge(parent, node)
+                        
+        return [tree for tree in trees if tree.number_of_nodes() > 1]  # Only return trees that have more than just Hi
+
+        # Cài đặt hàm generate_trees_from_graph ở đây
+
+    def update_f_values(self, Ti, u, f_values):
+        if u in Ti:
+            descendants = list(nx.descendants(Ti, u))
+            
+            # Remove u and all its descendants
+            Ti.remove_nodes_from([u] + descendants)
+            
+        for v in Ti.nodes():
+            if v in f_values:
+                # If v is a prefix of u, update its f-value
+                if u in nx.descendants(Ti, v):
+                    f_values[Ti][v] = f_values[Ti][v] - f_values[Ti].get(u , 0)
+                else:
+                    # Otherwise, simply calculate the new f-value
+                    f_values[Ti][v] = self.calculate_f(Ti, v)
+
+        # Cài đặt hàm update_f_values ở đây
+
+    def calculate_delta(self, u, Ti_sets, f_values):
+        delta_u = 0
+        q = len(Ti_sets)  # Number of topics
+        for topic in Ti_sets:
+            for Ti_list in Ti_sets[topic]:
+                for Ti in Ti_list:
+                    Ti_copy = Ti.copy()
+                    if u in Ti.nodes(): 
+                        Ti_copy.remove_node(u)
+                        
+                        delta_u += (1/q) * (f_values[Ti]['Hi'] - self.calculate_f(Ti_copy , 'Hi'))
+        return delta_u
+
+        # Cài đặt hàm calculate_delta ở đây
+
+    def GEA(self, B, num_samples=10):
+        G_update , num_activated_nodes_by_topic = self.simulate_spread_MT_LT_updated_G()
+        sample_nodes = random.sample(list(G_update.nodes()), min(10, len(G_update.nodes())))
+        print({node: G_update.nodes[node]['state'] for node in sample_nodes})
+        print(num_activated_nodes_by_topic)
+
+        U = set(G_update.nodes())
+        A1 = set()
+        topics = ['topic_1', 'topic_2', 'topic_3']
+        q = len(topics)
+        
+        # Step 2 and 3: Build Gi and Merge Gi
+        separated_graphs = self.separate_graphs_by_topic(G_update , topics)
+        source_nodes_by_topic = {}
+
+        # Duyệt qua từng đồ thị đã được tách và tìm các đỉnh nguồn
+        for topic, G_topic in separated_graphs.items():
+            source_nodes = [node for node, data in G_topic.nodes(data=True) if data['state'] == {topic}]
+            source_nodes_by_topic[topic] = source_nodes
+
+        unified_graphs = {}
+        for topic in topics:
+            unified_graphs[topic], Hi = self.unify_source_nodes_safe(separated_graphs[topic], source_nodes_by_topic[topic] , topic)
+        
+        Ti_sets = {}
+        
+
+        for topic, Gi_prime in unified_graphs.items():
+            Hi = 'Hi'
+            sample_graphs = self.generate_live_edge_samples(Gi_prime, num_samples)
+            
+            Ti_sets[topic] = [self.generate_trees_from_graph(sample, Hi) for sample in sample_graphs]
+        
+        # Initialize sigma_hat (approximated influence spread) for each node to 0
+        sigma_hat = {node: 0 for node in list(self.G.nodes()) + ['Hi']}
+        f_values = {}
+        # Step 6: Calculate sigma_hat for all u in THi by Algorithm 4
+        for topic in Ti_sets:
+            for Ti_list in Ti_sets[topic]:
+                for Ti in Ti_list:
+                    f_values[Ti] = {}
+
+                    for u in Ti.nodes():
+                        f_values[Ti][u] = self.calculate_f(Ti, u)
+                        sigma_hat[u] += f_values[Ti][u]
+        
+        # Normalize sigma_hat
+        for u in sigma_hat:
+            sigma_hat[u] = sigma_hat[u] / (q * num_samples)
+        
+        # Step 8: Find umax
+        umax = max((node for node in sigma_hat.keys() if node != 'Hi' and self.G.nodes[node]['c'] <= B), key=lambda node: sigma_hat[node])
+        print(umax)
+        count = 0
+        # Step 9: Repeat
+        while U:
+            # Step 10: Find cmin
+            cmin = min(self.G.nodes[node]['c'] for node in U)
+            
+            # Step 11: Check budget
+            if cmin + sum(self.G.nodes[node]['c'] for node in A1) > B:
+                break
+            
+            # Step 12: Find u with max delta(A1, u)
+            # u = max(U, key=lambda node: sigma_hat[node] - sum(sigma_hat[v] for v in A1 ))
+            u = max(U, key=lambda node: self.calculate_delta(node , Ti_sets, f_values))
+            print(u)
+            U.remove(u)
+            # Step 14: Check budget again
+            if sum(self.G.nodes[node]['c'] for node in A1) + self.G.nodes[u]['c'] <= B:
+                A1.add(u)
+                for topic in Ti_sets:
+                    for Ti_list in Ti_sets[topic]:
+                        for Ti in Ti_list:
+                            if u in Ti:
+                            # Block node u and update f(Ti, v)
+                            # (Assuming you have an update_f_values function)
+                                self.update_f_values(Ti, u, f_values)
+
+            
+        
+        
+        # Step 23: Finalize the set of nodes A
+        sigma_hat_A1 = sum(sigma_hat[u] for u in self.G.nodes() if u not in A1)
+        A = A1 if sigma_hat_A1 > sigma_hat[umax] else {umax}
+        print(sigma_hat_A1)
+
+        
+        return A
 
 
-# Test with a sample graph and source set
-G_sample = nx.DiGraph()
-G_sample.add_edges_from([(1, 2), (2, 3), (3, 4), (4, 5)])
-for u, v in G_sample.edges():
-    G_sample[u][v]['weight'] = 1.0
-G_sample.nodes[1]['p'] = {'topic': 0.6}
-G_sample.nodes[2]['p'] = {'topic': 0.7}
-G_sample.nodes[3]['p'] = {'topic': 0.8}
+        # Cài đặt hàm GEA ở đây
 
-S_sample = [1, 2, 3]
+def main():
+    filepath = 'C:\\Users\\Admin\\Downloads\\data\\p2p-Gnutella08.txt'
+    num_topics = 3
+    budget = 20
 
-# Run the function
-G_prime_sample, Hi_sample = unify_source_nodes_safe(G_sample, S_sample)
+    model = MT_LT_GEA(filepath, num_topics)
 
-# Output the new graph and new source node
-print(G_prime_sample.edges(data=True), Hi_sample)
+    # Hiển thị trạng thái cập nhật cho một số đỉnh mẫu
+
+    gea = model.GEA(budget, num_samples=25)
+    print(gea)
+
+if __name__ == "__main__":
+    main()

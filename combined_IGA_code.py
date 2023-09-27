@@ -285,7 +285,7 @@ def GEA(G, B, num_samples=10):
 filepath = 'C:\\Users\\Admin\\Downloads\\data\\p2p-Gnutella08.txt'
 num_topics = 3
 
-my_graph = MyGraph(filepath=filepath, num_topics=3)
+my_graph = MyGraph(num_nodes=25, num_topics=3)
 
 # Truy cập đồ thị G
 G = my_graph.G
@@ -295,15 +295,15 @@ T_reduced = 1  # Reduced number of Monte Carlo simulations
 subgraph_ratio_reduced = 0.3  # Reduced ratio of nodes to keep in the subgraph
 activated_graphs = {}
 
-source_sets = {f'topic_{i+1}': random.sample(list(G.nodes()), min(100, len(G.nodes()))) for i in range(num_topics)}
+# source_sets = {f'topic_{i+1}': random.sample(list(G.nodes()), min(100, len(G.nodes()))) for i in range(num_topics)}
 
-print(source_sets)
+# print(source_sets)
 
-updated_G, num_activated_nodes_by_topic = simulate_spread_MT_LT_updated_G(G.copy(), source_sets)
+# updated_G, num_activated_nodes_by_topic = simulate_spread_MT_LT_updated_G(G.copy(), source_sets)
 
 # Check the updated states for a subset of nodes
-sample_nodes = random.sample(list(updated_G.nodes()), min(10, len(G.nodes())))
+sample_nodes = random.sample(list(G.nodes()), min(10, len(G.nodes())))
 print({node: G.nodes[node]['state'] for node in sample_nodes})
-print(num_activated_nodes_by_topic)
-gea = GEA(updated_G, B = 20, num_samples=100)
+# print(num_activated_nodes_by_topic)
+gea = GEA(G, B = 20, num_samples=3)
 print(gea)
